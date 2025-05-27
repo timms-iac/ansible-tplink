@@ -1,2 +1,78 @@
 ---
 # tasks file for tplink
+- name: Create tplink datastructure
+  ansible.builtin.set_fact:
+    tplink: |
+      {% set out = { "mac": "", "ports": [], "vlans": [], "mgmt_ip": tplink_host_ip_address, "mgmt_mac": tplink_host_mac_address } %}
+      {% set nb_device = query("netbox.netbox.nb_lookup", "devices", api_endpoint=ansible_nb_url, api_filter="name=" ~inventory_hostname, token=ansible_nb_token) %}
+      {% if nb_device[0].value.custom_fields.ManagementHostIP is defined %}
+      {% set _ = out.update({"mgmt_ip": nb_device[0].value.custom_fields.ManagementHostIP.address.split("/")[0]}) %}
+      {% set ip_obj = query("netbox.netbox.nb_lookup", "ip-addresses", api_endpoint=ansible_nb_url, api_filter="id=" ~nb_device[0].value.custom_fields.ManagementHostIP.id, token=ansible_nb_token) %}
+      {% if ip_obj[0].assigned_object.id is defined %}
+      {% set interface_obj = query("netbox.netbox.nb_lookup", "interfaces", api_endpoint=ansible_nb_url, api_filter="id=" ~ip_obj[0].assigned_object.id, token=ansible_nb_token) %}
+      {% if interface_obj[0].primary_mac_address.mac_address is defined and interface_obj[0].primary_mac_address.mac_address | ansible.utils.macaddr %}
+      {% set _ = out.update({"mgmt_mac": interface_obj[0].primary_mac_address.mac_address})  %}
+      {% elif interface_obj[0].mac_address is string and interface_obj[0].mac_address | ansible.utils.macaddr %}
+      {% set _ = out.update({"mgmt_mac": interface_obj[0].mac_address}) %}
+      {% elif interface_obj[0].mac_addresses[0].mac_address is defined and interface_obj[0].mac_addresses[0].mac_address is defined and interface_obj[0].mac_addresses[0].mac_address | ansible.utils.macaddr %}
+      {% set _ = out.update({"mgmt_mac": interface_obj[0].value.mac_addresses[0].mac_address}) %}
+      {% elif interface_obj[0].parent.id is defined %}
+      {% set parent_obj = query("netbox.netbox.nb_lookup", "interfaces", api_endpoint=ansible_nb_url, api_filter="id=" ~interface_obj[0].parent.id, token=ansible_nb_token) %}
+      {% set _ = out.update({"mgmt_mac": parent_obj[0].primary_mac_address.mac_address}) %}
+      {% endif %}
+      {% endif %}
+      {% endif %}
+      {# #}
+      {% for vlan in query("netbox.netbox.nb_lookup", "vlans", api_filter="site.name=" ~nb_device[0].value.site.name, api_endpoint=ansible_nb_url, token=ansible_nb_token) | sort(attribute="value.vid") %}
+      {% set _ = out.vlans.append({ "vlan_id": vlan.value.vid, "name": vlan.value.name, "untagged_ports": [], "tagged_ports": [] }) %}
+      {% endfor %}{# vlan #}
+      {# #}
+      {% for interface in query("netbox.netbox.nb_lookup", "interfaces", api_endpoint=ansible_nb_url, api_filter="device=" ~inventory_hostname, token=ansible_nb_token) %}
+      {% if interface.value.type.label == "Virtual" %}
+      {% set _ = out.update({"mac": interface.value.mac_address }) if interface.value.mac_address is defined %}
+      {% elif interface.value.name is defined and interface.value.description != "" %}
+      {% set _ = out.ports.append({"port": interface.value.name.split(' ')[1], "name": interface.value.description}) %}
+      {% for vid in out.vlans %}
+      {% set _ = vid.untagged_ports.append(interface.value.description) if interface.value.untagged_vlan.vid is defined and interface.value.untagged_vlan.vid == vid.vlan_id %}
+      {% for tvlan in interface.value.tagged_vlans %}
+      {% set _ = vid.tagged_ports.append(interface.value.description) if tvlan.vid == vid.vlan_id %}
+      {% endfor %}{# tvlan #}
+      {% endfor %}{# vid #}
+      {% endif %}{# interface.value.type.label #}
+      {% endfor %}{# interface #}
+      {% set tmp = [] %}
+      {% for vlan in out.vlans | reverse %}
+      {% set _ = vlan.pop("untagged_ports") if vlan.untagged_ports is defined and vlan.untagged_ports | length < 1 %}
+      {% set _ = vlan.pop("tagged_ports") if vlan.tagged_ports is defined and vlan.tagged_ports | length < 1 %}
+      {% set _ = out.vlans.pop(out.vlans.index(vlan))  if vlan.untagged_ports is undefined and vlan.tagged_ports is undefined %}
+      {% endfor %}
+      {{ out }}
+
+- name: Show tplink datastructure
+  ansible.builtin.debug:
+    var: tplink
+
+- ansible.builtin.meta: end_play
+- name: Show tplink datastructure
+  ansible.builtin.debug:
+    var: tplink
+
+- name: Configure the TP-Link switch
+  connection: local
+  rgl.tp_link_easy_smart_switch.smrt_config:
+    username: "{{ tplink_username }}"
+    password: "{{ tplink_password }}"
+    host_ip_address: "{{ tplink_host_ip_address }}"
+    host_mac_address: "{{ tplink_host_mac_address }}"
+    switch_mac_address: "{{ tplink.mac }}"
+        # NB undefined ports will be disabled and put in vlan 1 as untagged
+        #    ports.
+        # NB ports that are not explicitly added in vlans will be disabled
+        #    and put in vlan 1 as untagged ports.
+        # NB ports without explicit pvid will be deduced from the vlans (use
+        #    the first vlan that has the port as an untagged port).
+    ports: "{{ tplink.ports }}"
+    vlans: "{{ tplink.vlans }}"
+        # NB do not remove your management computer (in this example, its in
+        #    the desktop port) from vlan 1 because that is the only vlan
+        #    that can manage the switch.
