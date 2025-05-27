@@ -1,2 +1,6 @@
 ---
 # defaults file for tplink
+tplink_username: admin
+tplink_password: admin
+tplink_host_ip_address: 10.0.0.1
+tplink_host_mac_address: 52:54:DE:AD:BE:EF
