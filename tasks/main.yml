@@ -5,7 +5,7 @@
     tplink: |
       {% set out = { "mac": "", "ports": [], "vlans": [], "mgmt_ip": tplink_host_ip_address, "mgmt_mac": tplink_host_mac_address } %}
       {% set nb_device = query("netbox.netbox.nb_lookup", "devices", api_endpoint=ansible_nb_url, api_filter="name=" ~inventory_hostname, token=ansible_nb_token) %}
-      {% if nb_device[0].value.custom_fields.ManagementHostIP is defined %}
+      {% if nb_device[0].value.custom_fields.ManagementHostIP is mapping %}
       {% set _ = out.update({"mgmt_ip": nb_device[0].value.custom_fields.ManagementHostIP.address.split("/")[0]}) %}
       {% set ip_obj = query("netbox.netbox.nb_lookup", "ip-addresses", api_endpoint=ansible_nb_url, api_filter="id=" ~nb_device[0].value.custom_fields.ManagementHostIP.id, token=ansible_nb_token) %}
       {% if ip_obj[0].assigned_object.id is defined %}
@@ -53,9 +53,6 @@
     var: tplink
 
 - ansible.builtin.meta: end_play
-- name: Show tplink datastructure
-  ansible.builtin.debug:
-    var: tplink
 
 - name: Configure the TP-Link switch
   connection: local
